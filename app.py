@@ -1,187 +1,180 @@
+# ============================================
+# STAYER INTELLIGENCE DASHBOARD
+# app.py
+# ============================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-# -----------------------------
-# Load data
-# -----------------------------
+st.set_page_config(
+    page_title="Stayer Intelligence Dashboard",
+    layout="wide"
+)
+
+# --------------------------------------------
+# DATA LOADERS
+# --------------------------------------------
+
 @st.cache_data
 def load_data():
-    stayers = pd.read_csv("casino_stayers_clustered.csv")
-    migration = pd.read_csv("phase2_persona_migration_scored.csv")
-    queue = pd.read_csv("phase2_host_queue.csv")
-    return stayers, migration, queue
+    return {
+        "clustered": pd.read_csv("casino_stayers_clustered.csv"),
+        "behavior": pd.read_csv("casino_stayers_behavioral_analysis.csv"),
+        "cluster_desc": pd.read_csv("HDBSCAN_ClusterDescriptions.csv"),
+        "scored": pd.read_csv("step2_stayers_scored.csv"),
+        "host_queue": pd.read_csv("step2_stayers_host_queue.csv"),
+        "emerging": pd.read_csv("casino_emerging_stayers.csv"),
+    }
 
-stayers, migration, queue = load_data()
+data = load_data()
 
-st.set_page_config(page_title="Casino Stayer Intelligence", layout="wide")
+df_behavior = data["behavior"]
+df_clusters = data["cluster_desc"]
+df_host = data["host_queue"]
+df_emerging = data["emerging"]
 
-st.title("🎰 Casino Stayer Intelligence Dashboard")
+# --------------------------------------------
+# SIDEBAR
+# --------------------------------------------
 
-# -----------------------------
-# Sidebar navigation
-# -----------------------------
+st.sidebar.title("Navigation")
 page = st.sidebar.radio(
-    "Navigate",
+    "Go to",
     [
         "Executive Overview",
-        "Persona Performance",
-        "Migration Dynamics",
-        "Host Queue",
-        "Lift Simulator"
+        "Personas & Clusters",
+        "Behavioral Progression",
+        "Host Target List",
+        "Emerging Stayers"
     ]
 )
 
-# -----------------------------
-# PAGE 1 — Executive Overview
-# -----------------------------
+# --------------------------------------------
+# EXECUTIVE OVERVIEW
+# --------------------------------------------
+
 if page == "Executive Overview":
-    st.header("Executive Overview")
+    st.title("Stayer Executive Overview")
 
-    col1, col2, col3, col4 = st.columns(4)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Stayers", f"{len(df_behavior):,}")
+    c2.metric("Upgrade %", f"{(df_behavior['progression_flag']=='UPGRADE').mean()*100:.1f}%")
+    c3.metric("Downgrade %", f"{(df_behavior['progression_flag']=='DOWNGRADE').mean()*100:.1f}%")
+    c4.metric("Avg ADT (L12M)", f"{df_behavior['ADT'].mean():,.0f}")
 
-    col1.metric("Active Stayers", len(migration))
-    col2.metric("HIGH %", f"{(migration['pms_bucket']=='HIGH').mean():.1%}")
-    col3.metric("Upgrade Risk (avg)", f"{migration['P_UPGRADE'].mean():.2f}")
-    col4.metric("Downgrade Risk (avg)", f"{migration['P_DOWNGRADE'].mean():.2f}")
+    st.subheader("Stayer Distribution by Cluster")
+    st.bar_chart(df_behavior["cluster_hdbscan"].value_counts().sort_index())
 
-    st.subheader("PMS Distribution")
-    st.bar_chart(migration["pms_bucket"].value_counts(normalize=True))
+    st.subheader("Progression Breakdown")
+    st.bar_chart(df_behavior["progression_flag"].value_counts())
 
-    st.subheader("Persona Size")
-    st.bar_chart(
-        stayers["cluster_hdbscan"].value_counts().sort_index()
+# --------------------------------------------
+# PERSONAS & CLUSTERS
+# --------------------------------------------
+
+elif page == "Personas & Clusters":
+    st.title("Personas & Clusters")
+
+    st.dataframe(
+        df_clusters.sort_values("cluster_hdbscan"),
+        use_container_width=True
     )
 
-# -----------------------------
-# PAGE 2 — Persona Performance
-# -----------------------------
-elif page == "Persona Performance":
-    st.header("Persona Performance")
+    st.subheader("Cluster Size")
+    st.bar_chart(df_behavior["cluster_hdbscan"].value_counts().sort_index())
 
-    persona_summary = (
-        migration
-        .groupby("cluster_hdbscan")
-        .agg(
-            players=("user_id", "count"),
-            avg_ADT=("ADT_recent", "mean"),
-            pct_high=("pms_bucket", lambda x: (x=="HIGH").mean()),
-            upgrade_rate=("migration_label", lambda x: (x=="UPGRADE").mean()),
-            downgrade_rate=("migration_label", lambda x: (x=="DOWNGRADE").mean())
+    st.subheader("Upgrade / Downgrade by Cluster")
+    pivot = (
+        df_behavior
+        .pivot_table(
+            index="cluster_hdbscan",
+            columns="progression_flag",
+            values="user_id",
+            aggfunc="count",
+            fill_value=0
         )
-        .round(3)
+    )
+    st.dataframe(pivot, use_container_width=True)
+
+# --------------------------------------------
+# BEHAVIORAL PROGRESSION
+# --------------------------------------------
+
+elif page == "Behavioral Progression":
+    st.title("Behavioral Progression")
+
+    cluster = st.selectbox(
+        "Cluster",
+        sorted(df_behavior["cluster_hdbscan"].unique())
     )
 
-    st.dataframe(persona_summary, use_container_width=True)
+    subset = df_behavior[df_behavior["cluster_hdbscan"] == cluster]
 
-# -----------------------------
-# PAGE 3 — Migration Dynamics
-# -----------------------------
-elif page == "Migration Dynamics":
-    st.header("Migration Dynamics")
+    c1, c2 = st.columns(2)
 
-    high = migration[migration["pms_bucket"]=="HIGH"]
-    non_high = migration[migration["pms_bucket"]!="HIGH"]
+    c1.subheader("Progression")
+    c1.bar_chart(subset["progression_flag"].value_counts())
 
-    col1, col2 = st.columns(2)
+    c2.subheader("Hours Change")
+    c2.bar_chart(subset["hours_change"].value_counts())
 
-    col1.metric(
-        "HIGH Upgrade Rate",
-        f"{(high['migration_label']=='UPGRADE').mean():.1%}"
-    )
-
-    col2.metric(
-        "Non-HIGH Upgrade Rate",
-        f"{(non_high['migration_label']=='UPGRADE').mean():.1%}"
-    )
-
-    st.subheader("PMS vs ΔADT")
+    st.subheader("ADT vs Hours Played (Movement Insight)")
     st.scatter_chart(
-        migration[["pms_score", "delta_ADT"]].dropna()
+        subset[["ADT", "L12M_hourplayed"]]
     )
 
-# -----------------------------
-# PAGE 4 — Host Queue
-# -----------------------------
-elif page == "Host Queue":
-    st.header("Host Queue")
+    st.dataframe(subset.head(200), use_container_width=True)
 
-    persona_filter = st.multiselect(
-        "Persona",
-        sorted(queue["cluster_hdbscan"].unique()),
-        default=sorted(queue["cluster_hdbscan"].unique())
-    )
+# --------------------------------------------
+# HOST TARGET LIST
+# --------------------------------------------
 
-    lane_filter = st.multiselect(
-        "Lane",
-        queue["host_lane"].unique(),
-        default=queue["host_lane"].unique()
-    )
+elif page == "Host Target List":
+    st.title("Host Target List")
 
-    filtered = queue[
-        (queue["cluster_hdbscan"].isin(persona_filter)) &
-        (queue["host_lane"].isin(lane_filter))
-    ]
+    c1, c2, c3 = st.columns(3)
 
-    st.dataframe(filtered, use_container_width=True)
+    lane = c1.selectbox("Host Lane", ["ALL"] + sorted(df_host["host_lane"].unique()))
+    prog = c2.selectbox("Progression", ["ALL"] + sorted(df_host["progression_flag"].unique()))
+    clus = c3.selectbox("Cluster", ["ALL"] + sorted(df_host["cluster_hdbscan"].unique()))
+
+    filt = df_host.copy()
+    if lane != "ALL":
+        filt = filt[filt["host_lane"] == lane]
+    if prog != "ALL":
+        filt = filt[filt["progression_flag"] == prog]
+    if clus != "ALL":
+        filt = filt[filt["cluster_hdbscan"] == clus]
+
+    filt = filt.sort_values("priority_score", ascending=False)
+
+    st.dataframe(filt, use_container_width=True)
+
+    st.subheader("ROI Concentration Curve")
+    tmp = filt.copy()
+    tmp["cum_value"] = tmp["expected_dollars_per_hour"].cumsum()
+    st.line_chart(tmp["cum_value"])
 
     st.download_button(
-        "Download Queue",
-        filtered.to_csv(index=False),
-        file_name="host_queue_filtered.csv"
+        "Download Target List",
+        filt.to_csv(index=False),
+        "stayer_host_targets.csv",
+        "text/csv"
     )
 
-# -----------------------------
-# PAGE 5 — Lift Simulator
-# -----------------------------
-elif page == "Lift Simulator":
-    st.header("Expected Lift Simulator")
+# --------------------------------------------
+# EMERGING STAYERS
+# --------------------------------------------
 
-    target_group = st.selectbox(
-        "Target Group",
-        ["HIGH only", "Growth Lane only", "HIGH + Growth"]
-    )
+elif page == "Emerging Stayers":
+    st.title("Emerging Stayers (Upsell & Cross-Sell Experiments)")
 
-    intervention_rate = st.slider(
-        "Host Intervention Rate",
-        0.1, 1.0, 0.5, 0.05
-    )
+    c1, c2 = st.columns(2)
+    c1.metric("Emerging Stayers", f"{len(df_emerging):,}")
+    c2.metric("Eligible for Host %", f"{df_emerging['eligible_for_host'].mean()*100:.1f}%")
 
-    horizon = st.selectbox(
-        "Time Horizon (months)",
-        [3, 6, 12],
-        index=1
-    )
+    st.subheader("Experiment Types")
+    st.bar_chart(df_emerging["experiment_type"].value_counts())
 
-    if target_group == "HIGH only":
-        target = migration[migration["pms_bucket"]=="HIGH"]
-    elif target_group == "Growth Lane only":
-        target = migration[migration["user_id"].isin(queue["user_id"])]
-    else:
-        target = migration[
-            (migration["pms_bucket"]=="HIGH") &
-            (migration["user_id"].isin(queue["user_id"]))
-        ]
-
-    baseline_upgrade = (migration["migration_label"]=="UPGRADE").mean()
-    target_upgrade = (target["migration_label"]=="UPGRADE").mean()
-
-    incremental_prob = max(target_upgrade - baseline_upgrade, 0)
-    avg_delta_adt = target["delta_ADT"].mean()
-
-    expected_lift = (
-        len(target)
-        * intervention_rate
-        * incremental_prob
-        * avg_delta_adt
-        * horizon
-    )
-
-    st.metric(
-        "Estimated Incremental Value",
-        f"PhP{expected_lift:,.0f}"
-    )
-
-    st.caption(
-        "Scenario-based estimate. Actual lift depends on execution quality."
-    )
+    st.dataframe(df_emerging.head(200), use_container_width=True)
