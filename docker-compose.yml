@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: stayer_intel
+    ports:
+      - "8501:8501"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.enableCORS=false"]
+    restart: always
